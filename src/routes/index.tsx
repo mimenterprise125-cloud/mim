@@ -95,7 +95,7 @@ function HomePage() {
 
     setMyWorksLoading(true);
     try {
-      console.log("Searching for phone:", myWorksPhone);
+      console.log("[MY_WORKS] Searching for phone:", myWorksPhone);
       
       // Search for leads with this phone number
       const { data: leads, error: leadsError } = await supabase
@@ -103,10 +103,10 @@ function HomePage() {
         .select("id, name, email, phone, status, created_at")
         .eq("phone", myWorksPhone);
 
-      console.log("Leads response:", { leads, leadsError });
+      console.log("[MY_WORKS] Leads response:", { leads, leadsError });
 
       if (leadsError) {
-        console.error("Leads error:", leadsError);
+        console.error("[MY_WORKS] Leads error:", leadsError);
         toast.error("Database error", {
           description: `Failed to fetch leads: ${leadsError.message}`,
         });
@@ -123,56 +123,68 @@ function HomePage() {
       }
 
       const lead = leads[0]; // Use the first matching lead
-      console.log("Found lead:", lead);
+      console.log("[MY_WORKS] Found lead:", lead);
 
-      // Get related quotations and projects
-      const { data: quotations, error: quotationsError } = await supabase
-        .from("quotations")
-        .select("*")
-        .eq("lead_id", lead.id);
+      // Get related projects and payments in parallel
+      // Projects contain quotation information
+      const [projectsRes, paymentsRes] = await Promise.all([
+        supabase
+          .from("projects")
+          .select("*")
+          .eq("lead_id", lead.id),
+        supabase
+          .from("payments")
+          .select("*")
+          .eq("project_id", lead.id)
+          .or(`project_id.in.(SELECT id FROM projects WHERE lead_id='${lead.id}')`)
+      ]);
 
-      if (quotationsError) {
-        console.error("Quotations error:", quotationsError);
-        toast.warning("Could not load quotations", {
-          description: quotationsError.message,
-        });
+      const projects = projectsRes.data || [];
+      const payments = paymentsRes.data || [];
+
+      console.log("[MY_WORKS] Projects:", projects);
+      console.log("[MY_WORKS] Payments:", payments);
+
+      if (projectsRes.error) {
+        console.error("[MY_WORKS] Projects error:", projectsRes.error);
       }
 
-      const { data: projects, error: projectsError } = await supabase
-        .from("projects")
-        .select("*")
-        .eq("lead_id", lead.id);
-
-      if (projectsError) {
-        console.error("Projects error:", projectsError);
-        toast.warning("Could not load projects", {
-          description: projectsError.message,
-        });
+      if (paymentsRes.error) {
+        console.error("[MY_WORKS] Payments error:", paymentsRes.error);
+        // Try alternate query for payments
+        const { data: altPayments } = await supabase
+          .from("payments")
+          .select("*");
+        
+        if (altPayments) {
+          const filteredPayments = altPayments.filter((p: any) => {
+            // Match payments by checking if project_id matches any of our projects
+            return projects.some(proj => proj.id === p.project_id);
+          });
+          console.log("[MY_WORKS] Filtered payments:", filteredPayments);
+          payments.splice(0, payments.length, ...filteredPayments);
+        }
       }
 
-      const { data: payments, error: paymentsError } = await supabase
-        .from("payments")
-        .select("*")
-        .eq("lead_id", lead.id);
+      // Calculate totals from projects
+      const totalQuoted = projects.reduce((sum: number, p: any) => {
+        const amount = p.total_with_gst || p.final_amount || 0;
+        return sum + (typeof amount === 'number' ? amount : 0);
+      }, 0);
 
-      if (paymentsError) {
-        console.error("Payments error:", paymentsError);
-        toast.warning("Could not load payments", {
-          description: paymentsError.message,
-        });
-      }
+      const totalPaid = payments.reduce((sum: number, p: any) => {
+        const amount = p.amount || 0;
+        return sum + (typeof amount === 'number' ? amount : 0);
+      }, 0);
 
-      const totalQuoted = quotations?.reduce((sum: number, q: any) => sum + (q.total_amount || 0), 0) || 0;
-      const totalPaid = payments?.reduce((sum: number, p: any) => sum + (p.amount || 0), 0) || 0;
       const balance = totalQuoted - totalPaid;
 
-      console.log("Data aggregated:", { totalQuoted, totalPaid, balance });
+      console.log("[MY_WORKS] Data aggregated:", { totalQuoted, totalPaid, balance, projectCount: projects.length, paymentCount: payments.length });
 
       setMyWorksData({
         lead: lead,
-        quotations: quotations || [],
-        projects: projects || [],
-        payments: payments || [],
+        projects: projects,
+        payments: payments,
         totalQuoted,
         totalPaid,
         balance,
@@ -182,7 +194,7 @@ function HomePage() {
         description: `Welcome ${lead.name || "there"}. Your project details are loaded.`,
       });
     } catch (error: any) {
-      console.error("Error searching works:", error);
+      console.error("[MY_WORKS] Error searching works:", error);
       const errorMessage = error?.message || "An unexpected error occurred";
       toast.error("Search failed", {
         description: errorMessage,
@@ -633,44 +645,136 @@ function HomePage() {
                   <div className="border-t border-gold/10 pt-2 flex justify-between">
                     <span className="text-foreground/70">Balance Remaining:</span>
                     <span className={myWorksData.balance > 0 ? "text-orange-400 font-semibold" : "text-green-400 font-semibold"}>
-                      ₹{myWorksData.balance.toLocaleString()}
+                      ₹{Math.abs(myWorksData.balance).toLocaleString()}
                     </span>
                   </div>
                 </div>
               </Card>
 
-              {/* Quotations */}
-              {myWorksData.quotations.length > 0 && (
+              {/* Projects Section */}
+              {myWorksData.projects.length > 0 && (
                 <Card className="bg-black border-gold/20 p-4">
-                  <h3 className="text-gold font-semibold mb-3">Quotations ({myWorksData.quotations.length})</h3>
-                  <div className="space-y-2 text-sm">
-                    {myWorksData.quotations.map((q: any) => (
-                      <div key={q.id} className="flex justify-between p-2 bg-ink-dark/50 rounded">
-                        <span className="text-foreground/70">{q.total_sqft} Sq.Ft @ ₹{q.rate_per_sqft}/Sq.Ft</span>
-                        <span className="text-gold font-semibold">₹{(q.total_amount || 0).toLocaleString()}</span>
+                  <h3 className="text-gold font-semibold mb-3">Projects ({myWorksData.projects.length})</h3>
+                  <div className="space-y-3">
+                    {myWorksData.projects.map((project: any) => (
+                      <div key={project.id} className="bg-ink-dark/50 rounded p-3 border border-gold/10">
+                        <div className="flex justify-between items-start mb-2">
+                          <div className="flex-1">
+                            <p className="font-semibold text-white">{project.name || `Project ${project.id.slice(0, 8)}`}</p>
+                            <p className="text-xs text-foreground/60">
+                              {project.total_sqft} Sq.Ft @ ₹{(project.rate_per_sqft || 0).toLocaleString()}/Sq.Ft
+                            </p>
+                          </div>
+                          <span className={`px-2 py-1 rounded text-xs font-semibold whitespace-nowrap ${
+                            project.status === 'COMPLETED' ? "bg-green-500/20 text-green-400" :
+                            project.status === 'ACTIVE' || project.status === 'active' ? "bg-blue-500/20 text-blue-400" :
+                            project.status === 'DELAYED' || project.status === 'delayed' ? "bg-red-500/20 text-red-400" :
+                            project.status === 'ON_HOLD' ? "bg-yellow-500/20 text-yellow-400" :
+                            "bg-gray-500/20 text-gray-400"
+                          }`}>
+                            {project.status?.toUpperCase() || 'ACTIVE'}
+                          </span>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-2 text-xs border-t border-gold/10 pt-2">
+                          <div>
+                            <p className="text-foreground/60">Amount</p>
+                            <p className="text-gold font-semibold">₹{(project.total_with_gst || project.final_amount || 0).toLocaleString()}</p>
+                          </div>
+                          <div>
+                            <p className="text-foreground/60">GST</p>
+                            <p className="text-gold">₹{(project.gst_amount || 0).toLocaleString()}</p>
+                          </div>
+                          {project.expected_completion_date && (
+                            <div className="col-span-2">
+                              <p className="text-foreground/60">Expected Completion</p>
+                              <p className="text-white">{new Date(project.expected_completion_date).toLocaleDateString()}</p>
+                            </div>
+                          )}
+                          {project.delay_reason && (
+                            <div className="col-span-2">
+                              <p className="text-foreground/60">Delay Reason</p>
+                              <p className="text-orange-400 text-xs">{project.delay_reason}</p>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
                 </Card>
               )}
 
-              {/* Projects */}
-              {myWorksData.projects.length > 0 && (
+              {/* Payment History */}
+              {myWorksData.payments.length > 0 && (
                 <Card className="bg-black border-gold/20 p-4">
-                  <h3 className="text-gold font-semibold mb-3">Projects ({myWorksData.projects.length})</h3>
+                  <h3 className="text-gold font-semibold mb-3">Payment History ({myWorksData.payments.length})</h3>
                   <div className="space-y-2 text-sm">
-                    {myWorksData.projects.map((p: any) => (
-                      <div key={p.id} className="flex justify-between p-2 bg-ink-dark/50 rounded">
-                        <span className="text-foreground/70">{p.name}</span>
-                        <span className={`px-2 py-1 rounded text-xs ${
-                          p.status === "completed" ? "bg-green-500/20 text-green-400" :
-                          p.status === "in-progress" ? "bg-blue-500/20 text-blue-400" :
-                          "bg-gray-500/20 text-gray-400"
-                        }`}>
-                          {p.status}
+                    {myWorksData.payments.map((payment: any, idx: number) => (
+                      <div key={payment.id} className="flex justify-between items-center p-2 bg-ink-dark/50 rounded border border-gold/10">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs bg-gold/20 text-gold px-2 py-1 rounded">
+                              {payment.type || 'PAYMENT'}
+                            </span>
+                            <span className={`text-xs px-2 py-1 rounded ${
+                              payment.status === 'PAID' ? "bg-green-500/20 text-green-400" :
+                              payment.status === 'PENDING' ? "bg-yellow-500/20 text-yellow-400" :
+                              payment.status === 'OVERDUE' ? "bg-red-500/20 text-red-400" :
+                              payment.status === 'DUE' ? "bg-orange-500/20 text-orange-400" :
+                              "bg-gray-500/20 text-gray-400"
+                            }`}>
+                              {payment.status || 'PENDING'}
+                            </span>
+                          </div>
+                          {payment.payment_date && (
+                            <p className="text-xs text-foreground/60 mt-1">
+                              {new Date(payment.payment_date).toLocaleDateString()}
+                            </p>
+                          )}
+                          {payment.notes && (
+                            <p className="text-xs text-foreground/50 mt-1">{payment.notes}</p>
+                          )}
+                        </div>
+                        <span className="text-gold font-semibold whitespace-nowrap ml-2">
+                          ₹{(payment.amount || 0).toLocaleString()}
                         </span>
                       </div>
                     ))}
+                  </div>
+                  
+                  {/* Payment Statistics */}
+                  <div className="mt-4 pt-4 border-t border-gold/10 grid grid-cols-3 gap-2 text-xs">
+                    {(() => {
+                      const paid = myWorksData.payments.filter((p: any) => p.status === 'PAID').length;
+                      const pending = myWorksData.payments.filter((p: any) => p.status === 'PENDING' || p.status === 'DUE').length;
+                      const overdue = myWorksData.payments.filter((p: any) => p.status === 'OVERDUE').length;
+                      return (
+                        <>
+                          <div className="text-center">
+                            <p className="text-foreground/60">Paid</p>
+                            <p className="text-green-400 font-semibold">{paid}</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-foreground/60">Pending</p>
+                            <p className="text-yellow-400 font-semibold">{pending}</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-foreground/60">Overdue</p>
+                            <p className="text-red-400 font-semibold">{overdue}</p>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </Card>
+              )}
+
+              {/* No Payments */}
+              {myWorksData.payments.length === 0 && (
+                <Card className="bg-black border-gold/20 p-4">
+                  <div className="text-center py-4">
+                    <p className="text-foreground/60 text-sm">No payment records found yet</p>
+                    <p className="text-foreground/40 text-xs mt-2">Payment information will appear here once they are recorded</p>
                   </div>
                 </Card>
               )}

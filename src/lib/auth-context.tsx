@@ -31,6 +31,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Fetch user profile with error handling
   const fetchUserProfile = useCallback(async (userId: string) => {
     try {
+      console.log("[AUTH] Fetching profile for user:", userId);
+      
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
 
@@ -43,15 +45,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearTimeout(timeoutId);
 
       if (!error && data) {
+        console.log("[AUTH] Profile fetched successfully:", data);
         setUserProfile(data);
         return true;
       } else {
-        console.warn("Failed to fetch user profile:", error);
+        console.warn("[AUTH] Failed to fetch user profile:", error);
         setUserProfile(null);
         return false;
       }
     } catch (error) {
-      console.error("Profile fetch error:", error);
+      console.error("[AUTH] Profile fetch error:", error);
       setUserProfile(null);
       return false;
     }
@@ -64,19 +67,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const checkSession = async () => {
       try {
+        console.log("[AUTH] Checking existing session");
+        
         const {
           data: { session },
         } = await supabase.auth.getSession();
 
         if (session?.user) {
+          console.log("[AUTH] Found existing session for user:", session.user.id);
           setUser(session.user);
           await fetchUserProfile(session.user.id);
         } else {
+          console.log("[AUTH] No existing session found");
           setUser(null);
           setUserProfile(null);
         }
       } catch (error) {
-        console.error("Session check error:", error);
+        console.error("[AUTH] Session check error:", error);
         setUser(null);
         setUserProfile(null);
       } finally {
@@ -149,22 +156,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = async (email: string, password: string) => {
     try {
+      console.log("[AUTH] Starting sign in for:", email);
+      
       const { error, data } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
 
-      if (error) throw error;
+      if (error) {
+        console.error("[AUTH] Supabase signIn error:", error);
+        throw error;
+      }
+
+      console.log("[AUTH] Sign in successful, user:", data.user?.id);
 
       // Wait for the auth state to be updated by the listener
       // Check session after sign in
       if (data.user) {
+        console.log("[AUTH] Setting user state");
         setUser(data.user);
         // Fetch profile immediately
+        console.log("[AUTH] Fetching user profile");
         await fetchUserProfile(data.user.id);
+        console.log("[AUTH] Profile fetched successfully");
       }
     } catch (error) {
-      console.error("Sign in error:", error);
+      console.error("[AUTH] Sign in error:", error);
       throw error;
     }
   };

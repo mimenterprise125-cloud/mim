@@ -31,15 +31,25 @@ function LoginComponent() {
     setLoading(true);
 
     try {
+      if (!email || !password) {
+        throw new Error("Email and password are required");
+      }
+
+      console.log("[LOGIN] Attempting to sign in with email:", email);
+      
       // Call signIn
       await signIn(email, password);
+      
+      console.log("[LOGIN] Sign in successful, waiting for auth state update");
       
       // Wait for auth state to be updated
       // The useEffect above will handle the redirect when user is set
       setSuccess(true);
     } catch (err: any) {
-      console.error("Login error:", err);
-      setError(err.message || "Failed to sign in. Please check your credentials.");
+      console.error("[LOGIN] Login error:", err);
+      const errorMsg = err?.message || err?.error_description || "Failed to sign in. Please check your credentials.";
+      console.error("[LOGIN] Error message:", errorMsg);
+      setError(errorMsg);
       setSuccess(false);
     } finally {
       setLoading(false);
