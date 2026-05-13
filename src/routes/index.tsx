@@ -95,109 +95,140 @@ function HomePage() {
 
     setMyWorksLoading(true);
     try {
-      console.log("[MY_WORKS] Searching for phone:", myWorksPhone);
+      console.log("[MY_WORKS] Step 1: Searching for leads with phone:", myWorksPhone);
       
-      // Search for leads with this phone number
+      // Step 1: Search for leads with this phone number
       const { data: leads, error: leadsError } = await supabase
         .from("leads")
-        .select("id, name, email, phone, status, created_at")
+        .select("*")
         .eq("phone", myWorksPhone);
 
-      console.log("[MY_WORKS] Leads response:", { leads, leadsError });
-
       if (leadsError) {
-        console.error("[MY_WORKS] Leads error:", leadsError);
-        toast.error("Database error", {
-          description: `Failed to fetch leads: ${leadsError.message}`,
+        console.error("[MY_WORKS] Step 1 Error - Leads query failed:", leadsError);
+        toast.error("Database Error", {
+          description: `Failed to search leads: ${leadsError.message}`,
         });
+        setMyWorksLoading(false);
         return;
       }
 
+      console.log("[MY_WORKS] Step 1 Result - Leads found:", leads?.length || 0);
+
       if (!leads || leads.length === 0) {
-        toast.error("No records found", {
-          description: `No projects found for phone number ${myWorksPhone}. Please check and try again.`,
+        console.warn("[MY_WORKS] No leads found for phone:", myWorksPhone);
+        toast.error("No Records Found", {
+          description: `Sorry, we couldn't find any projects for phone number ${myWorksPhone}. Please verify your number and try again.`,
         });
         setMyWorksData(null);
         setMyWorksLoading(false);
         return;
       }
 
-      const lead = leads[0]; // Use the first matching lead
-      console.log("[MY_WORKS] Found lead:", lead);
+      const lead = leads[0];
+      console.log("[MY_WORKS] Step 1 Success - Found lead:", { id: lead.id, name: lead.name, phone: lead.phone, status: lead.status });
 
-      // Get related projects and payments in parallel
-      // Projects contain quotation information
-      const [projectsRes, paymentsRes] = await Promise.all([
-        supabase
-          .from("projects")
-          .select("*")
-          .eq("lead_id", lead.id),
-        supabase
-          .from("payments")
-          .select("*")
-          .eq("project_id", lead.id)
-          .or(`project_id.in.(SELECT id FROM projects WHERE lead_id='${lead.id}')`)
-      ]);
+      // Step 2: Get all projects for this lead
+      console.log("[MY_WORKS] Step 2: Fetching projects for lead ID:", lead.id);
+      const { data: projects, error: projectsError } = await supabase
+        .from("projects")
+        .select("*")
+        .eq("lead_id", lead.id);
 
-      const projects = projectsRes.data || [];
-      const payments = paymentsRes.data || [];
-
-      console.log("[MY_WORKS] Projects:", projects);
-      console.log("[MY_WORKS] Payments:", payments);
-
-      if (projectsRes.error) {
-        console.error("[MY_WORKS] Projects error:", projectsRes.error);
+      if (projectsError) {
+        console.error("[MY_WORKS] Step 2 Error - Projects query failed:", projectsError);
+        toast.error("Database Error", {
+          description: `Failed to fetch projects: ${projectsError.message}`,
+        });
+        setMyWorksLoading(false);
+        return;
       }
 
-      if (paymentsRes.error) {
-        console.error("[MY_WORKS] Payments error:", paymentsRes.error);
-        // Try alternate query for payments
-        const { data: altPayments } = await supabase
-          .from("payments")
-          .select("*");
-        
-        if (altPayments) {
-          const filteredPayments = altPayments.filter((p: any) => {
-            // Match payments by checking if project_id matches any of our projects
-            return projects.some(proj => proj.id === p.project_id);
-          });
-          console.log("[MY_WORKS] Filtered payments:", filteredPayments);
-          payments.splice(0, payments.length, ...filteredPayments);
+      console.log("[MY_WORKS] Step 2 Result - Projects found:", projects?.length || 0, projects);
+
+      if (!projects || projects.length === 0) {
+        console.warn("[MY_WORKS] No projects found for lead:", lead.id);
+        toast.warning("No Projects Yet", {
+          description: `${lead.name}, we found your account but no projects are associated yet. Please contact us to start your project.`,
+        });
+        setMyWorksData({
+          lead: lead,
+          projects: [],
+          payments: [],
+          totalQuoted: 0,
+          totalPaid: 0,
+          balance: 0,
+        });
+        setMyWorksLoading(false);
+        return;
+      }
+
+      // Step 3: Get all payments for this lead using payment_history table
+      console.log("[MY_WORKS] Step 3: Fetching payment history for lead");
+      console.log("[MY_WORKS] Lead ID:", lead.id);
+
+      let filteredPayments: any[] = [];
+
+      try {
+        const { data: paymentHistoryData, error: paymentHistoryError } = await supabase
+          .from("payment_history")
+          .select("*")
+          .eq("lead_id", lead.id);
+
+        if (paymentHistoryError) {
+          console.error("[MY_WORKS] Step 3 Error - Payment history query failed:", paymentHistoryError);
+          console.log("[MY_WORKS] Continuing with empty payments list");
+        } else {
+          filteredPayments = paymentHistoryData || [];
+          console.log("[MY_WORKS] Step 3 Result - Payment history found:", filteredPayments.length);
+          console.log("[MY_WORKS] Step 3 - Payment details:", JSON.stringify(filteredPayments, null, 2));
         }
+      } catch (error) {
+        console.error("[MY_WORKS] Step 3 Exception:", error);
       }
 
-      // Calculate totals from projects
+      console.log("[MY_WORKS] Step 3 Result - Payments to display:", filteredPayments);
+
+      // Step 4: Calculate totals
+      console.log("[MY_WORKS] Step 4: Calculating totals");
       const totalQuoted = projects.reduce((sum: number, p: any) => {
         const amount = p.total_with_gst || p.final_amount || 0;
         return sum + (typeof amount === 'number' ? amount : 0);
       }, 0);
 
-      const totalPaid = payments.reduce((sum: number, p: any) => {
-        const amount = p.amount || 0;
+      // Calculate total paid from payment_history (uses amount_paid field)
+      const totalPaid = filteredPayments.reduce((sum: number, p: any) => {
+        const amount = p.amount_paid || 0;
         return sum + (typeof amount === 'number' ? amount : 0);
       }, 0);
 
       const balance = totalQuoted - totalPaid;
 
-      console.log("[MY_WORKS] Data aggregated:", { totalQuoted, totalPaid, balance, projectCount: projects.length, paymentCount: payments.length });
+      console.log("[MY_WORKS] Step 4 Result - Total Quoted:", totalQuoted);
+      console.log("[MY_WORKS] Step 4 Result - Total Paid:", totalPaid);
+      console.log("[MY_WORKS] Step 4 Result - Balance:", balance);
+      console.log("[MY_WORKS] Step 4 Result - Totals calculated:", { totalQuoted, totalPaid, balance });
 
+      // Step 5: Set data and show success toast
+      console.log("[MY_WORKS] Step 5: Setting data and showing success");
       setMyWorksData({
         lead: lead,
         projects: projects,
-        payments: payments,
+        payments: filteredPayments,
         totalQuoted,
         totalPaid,
         balance,
       });
 
-      toast.success("Project found!", {
-        description: `Welcome ${lead.name || "there"}. Your project details are loaded.`,
+      toast.success("Projects Found! 🎉", {
+        description: `Welcome ${lead.name}! We found ${projects.length} project(s) and ${filteredPayments.length} payment(s). Your project status and payment history are ready below.`,
       });
+
+      console.log("[MY_WORKS] SUCCESS - All data loaded successfully");
+
     } catch (error: any) {
-      console.error("[MY_WORKS] Error searching works:", error);
-      const errorMessage = error?.message || "An unexpected error occurred";
-      toast.error("Search failed", {
-        description: errorMessage,
+      console.error("[MY_WORKS] Unexpected error:", error);
+      toast.error("Something Went Wrong", {
+        description: error?.message || "An unexpected error occurred while searching. Please try again.",
       });
     } finally {
       setMyWorksLoading(false);
@@ -586,13 +617,18 @@ function HomePage() {
 
           {!myWorksData ? (
             <div className="space-y-4">
-              <p className="text-foreground/70 text-sm">
-                Enter your mobile number to view your payment history and project status
-              </p>
+              <div className="bg-ink-dark/50 border border-gold/20 rounded p-4">
+                <p className="text-foreground/70 text-sm mb-4">
+                  📱 Enter your mobile number to view your project details, payment status, and project history
+                </p>
+                <p className="text-xs text-foreground/50">
+                  This is the same phone number you used when contacting us. If you don't remember, please call +91 9957640581
+                </p>
+              </div>
               <div className="space-y-3">
                 <Input
                   type="tel"
-                  placeholder="Enter your mobile number"
+                  placeholder="Enter your 10-digit mobile number"
                   value={myWorksPhone}
                   onChange={(e) => setMyWorksPhone(e.target.value.replace(/\D/g, ""))}
                   className="bg-ink border-gold/20 text-white placeholder:text-white/30"
@@ -600,15 +636,22 @@ function HomePage() {
                 />
                 <Button
                   onClick={searchMyWorks}
-                  disabled={myWorksLoading}
-                  className="w-full bg-gold text-ink hover:bg-gold/90"
+                  disabled={myWorksLoading || myWorksPhone.length < 10}
+                  className="w-full bg-gold text-ink hover:bg-gold/90 disabled:opacity-50"
                 >
-                  {myWorksLoading ? "Searching..." : "Search"}
+                  {myWorksLoading ? "🔍 Searching..." : "Search My Works"}
                 </Button>
               </div>
             </div>
           ) : (
             <div className="space-y-6">
+              {/* Customer Name Header */}
+              <div className="text-center p-4 bg-gradient-to-r from-ink-dark to-ink-dark/50 rounded-lg border border-gold/20">
+                <p className="text-foreground/60 text-sm">Welcome</p>
+                <h2 className="text-3xl font-bold text-gold mt-1">{myWorksData.lead.name || 'Customer'}</h2>
+                <p className="text-foreground/50 text-sm mt-2">📞 {myWorksData.lead.phone}</p>
+              </div>
+
               {/* Project Status */}
               <Card className="bg-black border-gold/20 p-4">
                 <h3 className="text-gold font-semibold mb-3">Project Status</h3>
@@ -630,42 +673,90 @@ function HomePage() {
                 </div>
               </Card>
 
-              {/* Payment Summary */}
-              <Card className="bg-black border-gold/20 p-4">
-                <h3 className="text-gold font-semibold mb-3">Payment Summary</h3>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-foreground/70">Total Quoted:</span>
-                    <span className="text-gold font-semibold">₹{myWorksData.totalQuoted.toLocaleString()}</span>
+              {/* Payment Summary - Always Show */}
+              <Card className="bg-gradient-to-br from-gold/10 to-yellow-500/5 border-gold/30 p-5 shadow-lg shadow-gold/20">
+                <h3 className="text-gold font-semibold mb-4 text-lg flex items-center gap-2">💰 Payment Summary</h3>
+                <div className="space-y-3">
+                  {/* Total Quoted Card */}
+                  <div className="flex justify-between items-center p-4 bg-ink-dark/60 rounded-lg border border-gold/20 hover:border-gold/40 transition">
+                    <div>
+                      <p className="text-foreground/60 text-sm">Total Quoted Amount</p>
+                      <p className="text-xs text-foreground/50">All projects combined</p>
+                    </div>
+                    <span className="text-gold font-bold text-2xl">₹{(myWorksData.totalQuoted || 0).toLocaleString()}</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-foreground/70">Total Paid:</span>
-                    <span className="text-green-400 font-semibold">₹{myWorksData.totalPaid.toLocaleString()}</span>
+
+                  {/* Total Paid Card */}
+                  <div className="flex justify-between items-center p-4 bg-green-500/5 rounded-lg border border-green-500/20 hover:border-green-500/40 transition">
+                    <div>
+                      <p className="text-foreground/60 text-sm">Total Paid</p>
+                      <p className="text-xs text-foreground/50">Payment received</p>
+                    </div>
+                    <span className="text-green-400 font-bold text-2xl">₹{(myWorksData.totalPaid || 0).toLocaleString()}</span>
                   </div>
-                  <div className="border-t border-gold/10 pt-2 flex justify-between">
-                    <span className="text-foreground/70">Balance Remaining:</span>
-                    <span className={myWorksData.balance > 0 ? "text-orange-400 font-semibold" : "text-green-400 font-semibold"}>
-                      ₹{Math.abs(myWorksData.balance).toLocaleString()}
+
+                  {/* Balance Card */}
+                  <div className={`flex justify-between items-center p-4 rounded-lg border transition ${
+                    myWorksData.balance > 0 
+                      ? "bg-orange-500/5 border-orange-500/20 hover:border-orange-500/40" 
+                      : myWorksData.balance < 0 
+                      ? "bg-green-500/5 border-green-500/20 hover:border-green-500/40"
+                      : "bg-yellow-500/5 border-yellow-500/20 hover:border-yellow-500/40"
+                  }`}>
+                    <div>
+                      <p className="text-foreground/60 text-sm">Balance Remaining</p>
+                      <p className="text-xs text-foreground/50">
+                        {myWorksData.balance > 0 && "Amount yet to be paid"}
+                        {myWorksData.balance < 0 && "Overpaid amount"}
+                        {myWorksData.balance === 0 && "Fully paid"}
+                      </p>
+                    </div>
+                    <span className={`font-bold text-2xl ${
+                      myWorksData.balance > 0 ? "text-orange-400" : 
+                      myWorksData.balance < 0 ? "text-green-400" : 
+                      "text-yellow-400"
+                    }`}>
+                      ₹{Math.abs(myWorksData.balance || 0).toLocaleString()}
                     </span>
                   </div>
+                  
+                  {/* Progress Bar */}
+                  {myWorksData.totalQuoted > 0 && (
+                    <div className="mt-4 pt-4 border-t border-gold/10">
+                      <div className="flex justify-between text-xs mb-2">
+                        <span className="text-foreground/60 font-medium">Payment Progress</span>
+                        <span className="text-gold font-semibold">{Math.round((myWorksData.totalPaid / myWorksData.totalQuoted) * 100)}% Complete</span>
+                      </div>
+                      <div className="w-full bg-ink rounded-full h-3 overflow-hidden shadow-inner">
+                        <div 
+                          className="bg-gradient-to-r from-gold via-yellow-400 to-gold h-full transition-all duration-500 shadow-lg shadow-gold/50"
+                          style={{ width: `${Math.min((myWorksData.totalPaid / myWorksData.totalQuoted) * 100, 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </Card>
 
               {/* Projects Section */}
-              {myWorksData.projects.length > 0 && (
-                <Card className="bg-black border-gold/20 p-4">
-                  <h3 className="text-gold font-semibold mb-3">Projects ({myWorksData.projects.length})</h3>
+              <Card className="bg-black border-gold/20 p-5">
+                <h3 className="text-gold font-semibold mb-4 text-lg flex items-center gap-2">🏗️ Projects ({myWorksData.projects.length})</h3>
+                {myWorksData.projects.length > 0 ? (
                   <div className="space-y-3">
-                    {myWorksData.projects.map((project: any) => (
-                      <div key={project.id} className="bg-ink-dark/50 rounded p-3 border border-gold/10">
-                        <div className="flex justify-between items-start mb-2">
+                    {myWorksData.projects.map((project: any, idx: number) => (
+                      <div key={project.id} className="bg-gradient-to-r from-ink-dark to-ink-dark/50 rounded-lg p-4 border border-gold/10 hover:border-gold/30 transition-all">
+                        {/* Project Header */}
+                        <div className="flex justify-between items-start mb-3">
                           <div className="flex-1">
-                            <p className="font-semibold text-white">{project.name || `Project ${project.id.slice(0, 8)}`}</p>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-xs bg-gold/20 text-gold px-2 py-1 rounded">Project {idx + 1}</span>
+                              <p className="font-semibold text-white text-sm">{project.name || `Project ${project.id.slice(0, 8)}`}</p>
+                            </div>
                             <p className="text-xs text-foreground/60">
-                              {project.total_sqft} Sq.Ft @ ₹{(project.rate_per_sqft || 0).toLocaleString()}/Sq.Ft
+                              {(project.total_sqft || 0).toLocaleString()} Sq.Ft @ ₹{(project.rate_per_sqft || 0).toLocaleString()}/Sq.Ft
                             </p>
                           </div>
-                          <span className={`px-2 py-1 rounded text-xs font-semibold whitespace-nowrap ${
+                          <span className={`px-3 py-1 rounded text-xs font-semibold whitespace-nowrap ${
                             project.status === 'COMPLETED' ? "bg-green-500/20 text-green-400" :
                             project.status === 'ACTIVE' || project.status === 'active' ? "bg-blue-500/20 text-blue-400" :
                             project.status === 'DELAYED' || project.status === 'delayed' ? "bg-red-500/20 text-red-400" :
@@ -676,120 +767,133 @@ function HomePage() {
                           </span>
                         </div>
                         
-                        <div className="grid grid-cols-2 gap-2 text-xs border-t border-gold/10 pt-2">
-                          <div>
-                            <p className="text-foreground/60">Amount</p>
+                        {/* Project Details Grid */}
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs border-t border-gold/10 pt-3">
+                          <div className="bg-ink/50 rounded p-2">
+                            <p className="text-foreground/60 text-xs">Amount</p>
                             <p className="text-gold font-semibold">₹{(project.total_with_gst || project.final_amount || 0).toLocaleString()}</p>
                           </div>
-                          <div>
-                            <p className="text-foreground/60">GST</p>
+                          <div className="bg-ink/50 rounded p-2">
+                            <p className="text-foreground/60 text-xs">GST (18%)</p>
                             <p className="text-gold">₹{(project.gst_amount || 0).toLocaleString()}</p>
                           </div>
+                          {project.rate_per_sqft && (
+                            <div className="bg-ink/50 rounded p-2">
+                              <p className="text-foreground/60 text-xs">Rate/Sq.Ft</p>
+                              <p className="text-yellow-400 font-semibold">₹{(project.rate_per_sqft || 0).toLocaleString()}</p>
+                            </div>
+                          )}
+                          {project.profit_percentage && (
+                            <div className="bg-ink/50 rounded p-2">
+                              <p className="text-foreground/60 text-xs">Profit %</p>
+                              <p className="text-green-400 font-semibold">{project.profit_percentage}%</p>
+                            </div>
+                          )}
                           {project.expected_completion_date && (
-                            <div className="col-span-2">
-                              <p className="text-foreground/60">Expected Completion</p>
-                              <p className="text-white">{new Date(project.expected_completion_date).toLocaleDateString()}</p>
+                            <div className="bg-ink/50 rounded p-2">
+                              <p className="text-foreground/60 text-xs">Expected Completion</p>
+                              <p className="text-white font-medium">{new Date(project.expected_completion_date).toLocaleDateString()}</p>
+                            </div>
+                          )}
+                          {project.new_completion_date && (
+                            <div className="bg-ink/50 rounded p-2 border border-orange-500/30">
+                              <p className="text-foreground/60 text-xs">Revised Completion</p>
+                              <p className="text-orange-400 font-medium">{new Date(project.new_completion_date).toLocaleDateString()}</p>
                             </div>
                           )}
                           {project.delay_reason && (
-                            <div className="col-span-2">
-                              <p className="text-foreground/60">Delay Reason</p>
-                              <p className="text-orange-400 text-xs">{project.delay_reason}</p>
+                            <div className="col-span-2 bg-red-500/5 rounded p-2 border border-red-500/20">
+                              <p className="text-foreground/60 text-xs">Delay Reason</p>
+                              <p className="text-red-400 text-xs">{project.delay_reason}</p>
                             </div>
                           )}
                         </div>
                       </div>
                     ))}
                   </div>
-                </Card>
-              )}
+                ) : (
+                  <div className="text-center py-8 bg-ink-dark/50 rounded-lg border border-dashed border-gold/20">
+                    <p className="text-foreground/60 text-sm">📭 No projects found</p>
+                    <p className="text-foreground/40 text-xs mt-2">Projects will appear here once you start one with us</p>
+                  </div>
+                )}
+              </Card>
 
-              {/* Payment History */}
-              {myWorksData.payments.length > 0 && (
-                <Card className="bg-black border-gold/20 p-4">
-                  <h3 className="text-gold font-semibold mb-3">Payment History ({myWorksData.payments.length})</h3>
-                  <div className="space-y-2 text-sm">
-                    {myWorksData.payments.map((payment: any, idx: number) => (
-                      <div key={payment.id} className="flex justify-between items-center p-2 bg-ink-dark/50 rounded border border-gold/10">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs bg-gold/20 text-gold px-2 py-1 rounded">
-                              {payment.type || 'PAYMENT'}
-                            </span>
-                            <span className={`text-xs px-2 py-1 rounded ${
-                              payment.status === 'PAID' ? "bg-green-500/20 text-green-400" :
-                              payment.status === 'PENDING' ? "bg-yellow-500/20 text-yellow-400" :
-                              payment.status === 'OVERDUE' ? "bg-red-500/20 text-red-400" :
-                              payment.status === 'DUE' ? "bg-orange-500/20 text-orange-400" :
-                              "bg-gray-500/20 text-gray-400"
-                            }`}>
-                              {payment.status || 'PENDING'}
-                            </span>
+              {/* Payment History - Always Show */}
+              <Card className="bg-black border-gold/20 p-5">
+                <h3 className="text-gold font-semibold mb-4 text-lg flex items-center gap-2">💳 Payment History ({myWorksData.payments.length})</h3>
+                {myWorksData.payments.length > 0 ? (
+                  <>
+                    <div className="space-y-2 mb-5">
+                      {myWorksData.payments.map((payment: any, idx: number) => (
+                        <div key={payment.id} className="flex items-center justify-between p-3 bg-ink-dark/50 rounded-lg border border-gold/10 hover:border-gold/30 transition-all">
+                          {/* Payment Date & Method */}
+                          <div className="flex items-center gap-3 flex-1">
+                            <div className="flex flex-col gap-1">
+                              <span className="text-xs bg-gold/20 text-gold px-2.5 py-1 rounded font-medium">
+                                {payment.payment_method || 'TRANSFER'}
+                              </span>
+                              {payment.payment_date && (
+                                <span className="text-xs text-foreground/50">
+                                  {new Date(payment.payment_date).toLocaleDateString('en-IN')}
+                                </span>
+                              )}
+                            </div>
+                            <div className="border-l border-gold/20 pl-3">
+                              <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded font-semibold">
+                                ✓ PAID
+                              </span>
+                              {payment.reference_number && (
+                                <p className="text-xs text-foreground/50 mt-1">Ref: {payment.reference_number}</p>
+                              )}
+                              {payment.notes && (
+                                <p className="text-xs text-foreground/50 mt-1">{payment.notes}</p>
+                              )}
+                            </div>
                           </div>
-                          {payment.payment_date && (
-                            <p className="text-xs text-foreground/60 mt-1">
-                              {new Date(payment.payment_date).toLocaleDateString()}
-                            </p>
-                          )}
-                          {payment.notes && (
-                            <p className="text-xs text-foreground/50 mt-1">{payment.notes}</p>
-                          )}
+                          
+                          {/* Amount */}
+                          <span className="text-gold font-bold text-lg ml-4 whitespace-nowrap">
+                            ₹{(payment.amount_paid || 0).toLocaleString()}
+                          </span>
                         </div>
-                        <span className="text-gold font-semibold whitespace-nowrap ml-2">
-                          ₹{(payment.amount || 0).toLocaleString()}
-                        </span>
+                      ))}
+                    </div>
+                    
+                    {/* Payment Statistics */}
+                    <div className="grid grid-cols-2 gap-3 text-xs border-t border-gold/10 pt-4">
+                      <div className="bg-green-500/10 rounded-lg p-3 border border-green-500/20">
+                        <p className="text-foreground/60 mb-1">✓ Total Payments</p>
+                        <p className="text-green-400 font-bold text-lg">{myWorksData.payments.length}</p>
+                        <p className="text-green-400/60 text-xs mt-1">₹{myWorksData.payments.reduce((sum: number, p: any) => sum + (p.amount_paid || 0), 0).toLocaleString()}</p>
                       </div>
-                    ))}
+                      <div className="bg-gold/10 rounded-lg p-3 border border-gold/20">
+                        <p className="text-foreground/60 mb-1">📊 Average Payment</p>
+                        <p className="text-gold font-bold text-lg">₹{Math.round(myWorksData.payments.reduce((sum: number, p: any) => sum + (p.amount_paid || 0), 0) / (myWorksData.payments.length || 1)).toLocaleString()}</p>
+                        <p className="text-gold/60 text-xs mt-1">Per transaction</p>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-center py-8 bg-ink-dark/50 rounded-lg border border-dashed border-gold/20">
+                    <p className="text-foreground/60 text-sm">💸 No payment records yet</p>
+                    <p className="text-foreground/40 text-xs mt-2">Payment history will appear here once payments are recorded</p>
                   </div>
-                  
-                  {/* Payment Statistics */}
-                  <div className="mt-4 pt-4 border-t border-gold/10 grid grid-cols-3 gap-2 text-xs">
-                    {(() => {
-                      const paid = myWorksData.payments.filter((p: any) => p.status === 'PAID').length;
-                      const pending = myWorksData.payments.filter((p: any) => p.status === 'PENDING' || p.status === 'DUE').length;
-                      const overdue = myWorksData.payments.filter((p: any) => p.status === 'OVERDUE').length;
-                      return (
-                        <>
-                          <div className="text-center">
-                            <p className="text-foreground/60">Paid</p>
-                            <p className="text-green-400 font-semibold">{paid}</p>
-                          </div>
-                          <div className="text-center">
-                            <p className="text-foreground/60">Pending</p>
-                            <p className="text-yellow-400 font-semibold">{pending}</p>
-                          </div>
-                          <div className="text-center">
-                            <p className="text-foreground/60">Overdue</p>
-                            <p className="text-red-400 font-semibold">{overdue}</p>
-                          </div>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </Card>
-              )}
-
-              {/* No Payments */}
-              {myWorksData.payments.length === 0 && (
-                <Card className="bg-black border-gold/20 p-4">
-                  <div className="text-center py-4">
-                    <p className="text-foreground/60 text-sm">No payment records found yet</p>
-                    <p className="text-foreground/40 text-xs mt-2">Payment information will appear here once they are recorded</p>
-                  </div>
-                </Card>
-              )}
+                )}
+              </Card>
 
               {/* Action Buttons */}
-              <div className="flex gap-3 pt-4">
+              <div className="flex gap-3 pt-5 border-t border-gold/20">
                 <Button
                   onClick={() => {
                     setMyWorksData(null);
                     setMyWorksPhone("");
+                    console.log("[MY_WORKS] Form reset");
                   }}
                   variant="outline"
-                  className="flex-1 border-gold/20 text-gold hover:bg-gold/10"
+                  className="flex-1 border-gold/40 text-gold hover:border-gold/60 hover:bg-gold/10 font-semibold py-5 rounded-lg transition-all active:scale-95"
                 >
-                  Search Another
+                  🔄 Search Another
                 </Button>
                 <a
                   href={`https://wa.me/${CONTACT_INFO.whatsapp}?text=Hi%20MIM%20Enterprises%2C%20I%20have%20a%20question%20about%20my%20project`}
@@ -797,8 +901,8 @@ function HomePage() {
                   rel="noreferrer"
                   className="flex-1"
                 >
-                  <Button className="w-full bg-emerald-600 hover:bg-emerald-700">
-                    Contact via WhatsApp
+                  <Button className="w-full bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-600/90 hover:to-emerald-500/90 font-semibold py-5 rounded-lg transition-all hover:shadow-lg hover:shadow-emerald-500/20 active:scale-95">
+                    💬 WhatsApp Support
                   </Button>
                 </a>
               </div>
