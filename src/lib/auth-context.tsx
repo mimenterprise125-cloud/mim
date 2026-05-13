@@ -33,28 +33,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       console.log("[AUTH] Fetching profile for user:", userId);
       
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      // Don't use abort controller - it can cause issues
+      // Instead use a shorter timeout directly in Supabase query
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Profile fetch timeout")), 3000)
+      );
 
-      const { data, error } = await supabase
+      const queryPromise = supabase
         .from("users")
         .select("*")
         .eq("id", userId)
         .single();
 
-      clearTimeout(timeoutId);
+      const { data, error } = await Promise.race([queryPromise, timeoutPromise]) as any;
 
       if (!error && data) {
-        console.log("[AUTH] Profile fetched successfully:", data);
+        console.log("[AUTH] Profile fetched successfully:", data.email);
         setUserProfile(data);
         return true;
       } else {
-        console.warn("[AUTH] Failed to fetch user profile:", error);
+        console.warn("[AUTH] Failed to fetch user profile:", error?.message || "Unknown error");
+        // Don't block on profile fetch - continue without it
         setUserProfile(null);
         return false;
       }
     } catch (error) {
       console.error("[AUTH] Profile fetch error:", error);
+      // Continue without profile rather than blocking
       setUserProfile(null);
       return false;
     }
@@ -64,6 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Flag to prevent multiple initializations in StrictMode
     let isInitialized = false;
     let loadingTimeout: NodeJS.Timeout;
+    let isMounted = true; // Track if component is mounted
 
     const checkSession = async () => {
       try {
@@ -73,10 +79,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           data: { session },
         } = await supabase.auth.getSession();
 
+        if (!isMounted) return; // Stop if component unmounted
+
         if (session?.user) {
           console.log("[AUTH] Found existing session for user:", session.user.id);
           setUser(session.user);
-          await fetchUserProfile(session.user.id);
+          // Fetch profile in background - don't wait for it
+          fetchUserProfile(session.user.id).catch(() => {
+            console.warn("[AUTH] Profile fetch failed in background");
+          });
         } else {
           console.log("[AUTH] No existing session found");
           setUser(null);
@@ -84,22 +95,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       } catch (error) {
         console.error("[AUTH] Session check error:", error);
-        setUser(null);
-        setUserProfile(null);
+        if (isMounted) {
+          setUser(null);
+          setUserProfile(null);
+        }
       } finally {
-        setLoading(false);
-        isInitialized = true;
+        if (isMounted) {
+          setLoading(false);
+          isInitialized = true;
+        }
       }
     };
 
     // Set a hard timeout to ensure loading is never stuck
     loadingTimeout = setTimeout(() => {
-      if (!isInitialized) {
-        console.warn("Auth initialization timeout - forcing completion");
+      if (!isInitialized && isMounted) {
+        console.warn("[AUTH] Auth initialization timeout - forcing completion");
         setLoading(false);
         isInitialized = true;
       }
-    }, 10000); // 10 second absolute timeout
+    }, 5000); // Reduced from 10s to 5s
 
     checkSession();
 
@@ -107,6 +122,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!isMounted) return;
+
       if (event === "SIGNED_OUT") {
         setUser(null);
         setUserProfile(null);
@@ -116,11 +133,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (session?.user) {
         setUser(session.user);
-        // Fetch profile with timeout
+        // Fetch profile but don't block on it
         try {
           await fetchUserProfile(session.user.id);
         } catch (error) {
-          console.error("Auth state change profile fetch failed:", error);
+          console.warn("[AUTH] Auth state change profile fetch failed:", error);
         }
       } else {
         setUser(null);
@@ -131,7 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Listen for visibility changes - refresh auth when tab becomes active
     const handleVisibilityChange = async () => {
-      if (!document.hidden && isInitialized) {
+      if (!document.hidden && isInitialized && isMounted) {
         // Tab became active again - refresh session silently
         try {
           const { data: { session } } = await supabase.auth.getSession();
@@ -139,7 +156,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             await fetchUserProfile(session.user.id);
           }
         } catch (error) {
-          console.error("Visibility change session refresh failed:", error);
+          console.warn("[AUTH] Visibility change session refresh failed:", error);
         }
       }
     };
@@ -148,6 +165,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Cleanup
     return () => {
+      isMounted = false;
       clearTimeout(loadingTimeout);
       subscription?.unsubscribe();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
