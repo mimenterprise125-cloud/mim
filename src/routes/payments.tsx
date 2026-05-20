@@ -149,11 +149,29 @@ function PaymentsPageComponent() {
       return;
     }
 
+    const amount = Number(paymentForm.amount);
+    if (amount <= 0) {
+      toast.error("Payment amount must be greater than 0");
+      return;
+    }
+
+    if (!paymentForm.payment_date) {
+      toast.error("Please select a payment date");
+      return;
+    }
+
+    // Get outstanding amount for validation
+    const stats = getPaymentStats(leadId);
+    if (amount > stats.remaining) {
+      toast.error(`Payment amount cannot exceed outstanding amount of ₹${stats.remaining.toLocaleString()}`);
+      return;
+    }
+
     try {
       const paymentRecord = {
         lead_id: leadId,
-        amount_paid: Number(paymentForm.amount),
-        payment_date: paymentForm.payment_date || new Date().toISOString().split('T')[0],
+        amount_paid: amount,
+        payment_date: paymentForm.payment_date,
         payment_method: paymentForm.method,
         created_at: new Date().toISOString(),
       };
@@ -167,6 +185,7 @@ function PaymentsPageComponent() {
 
       setPaymentForm({ amount: "", payment_date: "", method: "TRANSFER" });
       setShowPaymentForm(false);
+      setSelectedLead(null);
       toast.success("Payment recorded successfully!");
       
       // Refresh data after short delay to ensure DB is updated
@@ -318,20 +337,67 @@ function PaymentsPageComponent() {
                       )}
 
                       {/* Add Payment Form */}
-                      <Dialog open={showPaymentForm} onOpenChange={setShowPaymentForm}>
+                      <Dialog open={selectedLead?.id === lead.id && showPaymentForm} onOpenChange={(open) => {
+                        setShowPaymentForm(open);
+                        if (!open) {
+                          setPaymentForm({ amount: "", payment_date: "", method: "TRANSFER" });
+                          setSelectedLead(null);
+                        }
+                      }}>
                         <DialogTrigger asChild>
-                          <Button className="w-full bg-green-600 hover:bg-green-700 text-white">+ Add Payment</Button>
+                          <Button onClick={() => {
+                            setSelectedLead(lead);
+                            setShowPaymentForm(true);
+                          }} className="w-full bg-green-600 hover:bg-green-700 text-white">+ Add Payment</Button>
                         </DialogTrigger>
                         <DialogContent className="bg-black border-gold/20 max-w-sm">
                           <DialogHeader><DialogTitle className="text-gold">Record Payment for {lead.name}</DialogTitle></DialogHeader>
                           <div className="space-y-4">
+                            {/* Outstanding Amount Display */}
+                            <div className="bg-orange-500/10 border border-orange-500/20 rounded-lg p-3">
+                              <p className="text-orange-400/70 text-xs uppercase mb-1">Outstanding Amount</p>
+                              <p className="text-orange-400 text-2xl font-bold">₹{getPaymentStats(lead.id).remaining.toLocaleString()}</p>
+                            </div>
+
                             <div>
                               <p className="text-gold/60 text-xs uppercase mb-2">Amount (₹)</p>
-                              <Input type="number" placeholder="Enter payment amount" value={paymentForm.amount} onChange={(e) => setPaymentForm({...paymentForm, amount: e.target.value})} className="bg-ink border-gold/20 text-white" />
+                              <Input 
+                                type="number" 
+                                placeholder={`Max: ₹${getPaymentStats(lead.id).remaining.toLocaleString()}`}
+                                value={paymentForm.amount} 
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  setPaymentForm({...paymentForm, amount: value});
+                                  
+                                  // Show warning if amount exceeds outstanding
+                                  if (value && Number(value) > getPaymentStats(lead.id).remaining) {
+                                    toast.error(`Cannot exceed outstanding amount of ₹${getPaymentStats(lead.id).remaining.toLocaleString()}`, {
+                                      duration: 2000,
+                                      description: "Please enter an amount equal to or less than the outstanding amount"
+                                    });
+                                  }
+                                }} 
+                                className="bg-ink border-gold/20 text-white" 
+                                min="0"
+                                max={getPaymentStats(lead.id).remaining}
+                              />
+                              {paymentForm.amount && Number(paymentForm.amount) > getPaymentStats(lead.id).remaining && (
+                                <p className="text-red-400 text-xs mt-2">⚠️ Amount exceeds outstanding balance</p>
+                              )}
                             </div>
                             <div>
                               <p className="text-gold/60 text-xs uppercase mb-2">Payment Date</p>
-                              <Input type="date" value={paymentForm.payment_date} onChange={(e) => setPaymentForm({...paymentForm, payment_date: e.target.value})} className="bg-ink border-gold/20 text-white" />
+                              <Input 
+                                type="date" 
+                                value={paymentForm.payment_date} 
+                                onChange={(e) => setPaymentForm({...paymentForm, payment_date: e.target.value})} 
+                                className="bg-ink border border-gold/20 text-white px-3 py-2 rounded cursor-pointer hover:border-gold/40 transition"
+                                style={{
+                                  colorScheme: 'dark',
+                                }}
+                                max={new Date().toISOString().split('T')[0]}
+                              />
+                              <p className="text-gold/60 text-xs mt-1">Select date (max: today)</p>
                             </div>
                             <div>
                               <p className="text-gold/60 text-xs uppercase mb-2">Method</p>
