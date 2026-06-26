@@ -584,7 +584,7 @@ function HomePage() {
               <h3 className="text-gold font-display text-xl mb-4">Explore</h3>
               <div className="flex flex-col gap-2">
                 <Link to="/products" className="text-white hover:text-gold">Products</Link>
-                <Link to="/configurator" className="text-white hover:text-gold">Configurator</Link>
+                
                 <Link to="/projects-crm" className="text-white hover:text-gold">Projects</Link>
                 <Link to="/contact" className="text-white hover:text-gold">Contact</Link>
               </div>
